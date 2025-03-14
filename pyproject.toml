@@ -1,12 +1,17 @@
 [project]
-name = "reconstructing-bluesky"
+name = "src"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "ujson>=5.10.0",
-]
+dependencies = ["matplotlib>=3.10.1", "numpy>=2.2.3", "ujson>=5.10.0", "src"]
 
 [tool.uv.sources]
 src = { path = './src' }
+
+[dependency-groups]
+dev = ["ipykernel>=6.29.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
