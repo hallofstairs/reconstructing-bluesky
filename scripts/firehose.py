@@ -1,16 +1,8 @@
 import asyncio
 import json
-import os
 from datetime import datetime
 
 import websockets
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Get Bluesky service credentials from environment
-BSKY_HANDLE = os.getenv("BSKY_HANDLE")
-BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
 
 
 async def connect_firehose():
