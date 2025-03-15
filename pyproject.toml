@@ -11,6 +11,9 @@ dependencies = [
     "utils",
     "pandas>=2.2.3",
     "seaborn>=0.13.2",
+    "requests>=2.32.3",
+    "libipld>=3.0.1",
+    "websockets>=15.0.1",
 ]
 
 [tool.uv.sources]
