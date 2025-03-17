@@ -110,28 +110,47 @@ def save_record(record: dict[str, t.Any]):
         f.write("\n")
 
 
-# TODO: Make this faster (more threads?)
+def process_user(row):
+    did = row["did"]
+    created_at = row["created_at"]
+
+    if created_at[:10] > END_DATE_CUTOFF:
+        return False
+
+    save_record(
+        {"did": did, "$type": "app.bsky.actor.profile", "createdAt": created_at}
+    )
+    download_repo(did)
+    return True
+
+
 if __name__ == "__main__":
+    import argparse
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--threads", type=int, default=4)
+    args = parser.parse_args()
+
     if os.path.exists(STREAM_DIR):
         shutil.rmtree(STREAM_DIR)
     os.makedirs(STREAM_DIR)
 
     total_users = 0
+    total_users_lock = Lock()
 
     with open(DID_PATH, "r") as csvfile:
-        reader = csv.DictReader(csvfile)
+        reader = list(csv.DictReader(csvfile))
+
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:
+        futures = []
         for row in reader:
-            did = row["did"]
-            created_at = row["created_at"]
+            futures.append(executor.submit(process_user, row))
 
-            if created_at[:10] > END_DATE_CUTOFF:
-                break
-
-            save_record(
-                {"did": did, "$type": "app.bsky.actor.profile", "createdAt": created_at}
-            )
-            download_repo(did)
-
-            total_users += 1
+        for future in futures:
+            if future.result():
+                with total_users_lock:
+                    total_users += 1
 
     print(f"Finished crawl to {END_DATE_CUTOFF}. Total users: {total_users}")
