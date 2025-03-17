@@ -38,12 +38,12 @@ from utils import (
 
 # ==== Constants ====
 
-END_DATE = "2023-05-01"
+END_DATE = datetime.datetime(2023, 4, 1, tzinfo=datetime.timezone.utc)
 BATCH_SIZE = 1_000_000  # Number of records per file
 
 IN_DIR = "./data/stream-2023-07-01"
-TEMP_DIR = f"./data/firehose-temp-{END_DATE}"
-OUT_DIR = f"./data/firehose-{END_DATE}"
+TEMP_DIR = f"./data/firehose-temp-{END_DATE.date()}"
+OUT_DIR = f"./data/firehose-{END_DATE.date()}"
 
 # ==== Directory cleanup ====
 
@@ -86,6 +86,7 @@ def calc_timestamp(record: Record) -> int | None:
 stream_dir = Path(IN_DIR)
 files = sorted(stream_dir.glob("*.jsonl"))
 record_buffer: list[tuple[int, int, Record]] = []
+end_ts = END_DATE.timestamp() * 1_000  # Milliseconds
 
 counter = 0  # For heap tie-breaker
 total_records = 0
@@ -93,7 +94,7 @@ file_counter = 0
 
 for file in files:
     file_date = datetime.datetime.strptime(file.stem, "%Y-%m-%d").date()
-    if file_date > datetime.datetime.strptime(END_DATE, "%Y-%m-%d").date():
+    if file_date >= END_DATE.date():
         break
 
     with open(file) as f:
@@ -101,7 +102,9 @@ for file in files:
             record: Record = json.loads(line)
 
             ts = calc_timestamp(record)
-            if ts is None:
+
+            # Invalid rkey, or TS is past END_DATE
+            if ts is None or ts >= end_ts:
                 continue
 
             record_with_ts: Record = {"ts": ts, **record}  # type: ignore
@@ -145,8 +148,7 @@ deleted_posts = set[str]()
 
 # Iterate through each historical record in Bluesky's firehose
 for record in records(TEMP_DIR, end_date=END_DATE):
-    if record["did"] not in users:
-        users.add(record["did"])
+    users.add(record["did"])
 
     match record["$type"]:
         case "app.bsky.feed.post":
