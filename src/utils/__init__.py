@@ -2,7 +2,6 @@ import mmap
 import os
 import typing as t
 from datetime import datetime
-from enum import Enum
 
 import ujson as json
 from tqdm import tqdm
@@ -38,7 +37,7 @@ def records(
         [f for f in os.listdir(stream_path) if f.endswith(".json")],
         key=lambda x: int(x.split(".")[0]),
     )
-    for filename in tqdm(files, total=len(files) * batch_size):
+    for filename in tqdm(files, total=len(files)):
         with open(f"{stream_path}/{filename}", "r") as f:
             records: list[Record] = json.load(f)["records"]
             for record in records:
@@ -147,21 +146,36 @@ Record = Post | Follow | Repost | Like | Block | Profile
 # === Data utils ===
 
 
-class TimeFormat(str, Enum):
-    minute = "%Y-%m-%dT%H:%M"
-    hourly = "%Y-%m-%dT%H"
-    daily = "%Y-%m-%d"
-    weekly = "%Y-%W"
-    monthly = "%Y-%m"
+def get_quoted_uri(post: Post) -> t.Optional[str]:
+    if "embed" not in post or not post["embed"]:
+        return None
+
+    try:
+        if post["embed"]["$type"] == "app.bsky.embed.record":
+            return post["embed"]["record"]["uri"]
+        elif post["embed"]["$type"] == "app.bsky.embed.recordWithMedia":
+            return post["embed"]["record"]["record"]["uri"]
+    except KeyError:
+        return None
 
 
-def truncate_timestamp(timestamp: str, format: TimeFormat) -> str:
-    """
-    Get the relevant subset of a timestamp for a given grouping.
+def rkey_from_uri(uri: str) -> str | None:
+    rkey = uri.split("/")[-1]
 
-    e.g. "2023-01-01" for "daily, "2023-01" for "monthly"
-    """
-    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).strftime(format)
+    if not isinstance(rkey, str) or not rkey.isalnum() or len(rkey) != 13:
+        return None
+
+    return rkey
+
+
+def parse_rkey(rev: str) -> tuple[int, int]:
+    """Extract the data from the rkey of a URI. Returns (timestamp, clock_id) tuple.
+    timestamp is Unix timestamp in microseconds."""
+
+    timestamp = s32.decode(rev[:-2]) // 1000  # unix, milliseconds
+    clock_id = s32.decode(rev[-2:])
+
+    return timestamp, clock_id
 
 
 def did_from_uri(uri: str) -> str:
@@ -172,10 +186,6 @@ def did_from_uri(uri: str) -> str:
         return uri.split("/")[2]
     except Exception:
         raise ValueError(f"\nMisformatted URI: {uri}")
-
-
-def rkey_from_uri(uri: str) -> str:
-    return uri.split("/")[-1]
 
 
 class s32:
@@ -196,13 +206,3 @@ class s32:
         for c in s:
             i = i * 32 + s32.S32_CHAR.index(c)
         return i
-
-
-def parse_rkey(rev: str) -> tuple[int, int]:
-    """Extract the data from the rkey of a URI. Returns (timestamp, clock_id) tuple.
-    timestamp is Unix timestamp in microseconds."""
-
-    timestamp = s32.decode(rev[:-2])  # unix, microseconds
-    clock_id = s32.decode(rev[-2:])
-
-    return timestamp, clock_id

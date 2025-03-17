@@ -25,10 +25,16 @@ import heapq
 import json
 import os
 import shutil
-import typing as t
 from pathlib import Path
 
-from utils import Post, Record, did_from_uri, records, s32
+from utils import (
+    Record,
+    did_from_uri,
+    get_quoted_uri,
+    parse_rkey,
+    records,
+    rkey_from_uri,
+)
 
 # ==== Constants ====
 
@@ -53,41 +59,6 @@ os.makedirs(OUT_DIR)
 
 
 # ==== Helper functions ====
-
-
-def get_quoted_uri(post: Post) -> t.Optional[str]:
-    if "embed" not in post or not post["embed"]:
-        return None
-
-    try:
-        if post["embed"]["$type"] == "app.bsky.embed.record":
-            return post["embed"]["record"]["uri"]
-        elif post["embed"]["$type"] == "app.bsky.embed.recordWithMedia":
-            return post["embed"]["record"]["record"]["uri"]
-    except KeyError:
-        return None
-
-
-def rkey_from_uri(uri: str) -> str | None:
-    rkey = uri.split("/")[-1]
-
-    if not isinstance(rkey, str) or not rkey.isalnum() or len(rkey) != 13:
-        print(
-            f"WARNING! Invalid rkey format: {rkey} (should be 13 alphanumeric characters)"
-        )
-        return None
-
-    return rkey
-
-
-def parse_rkey(rev: str) -> tuple[int, int]:
-    """Extract the data from the rkey of a URI. Returns (timestamp, clock_id) tuple.
-    timestamp is Unix timestamp in microseconds."""
-
-    timestamp = s32.decode(rev[:-2]) // 1000  # unix, milliseconds
-    clock_id = s32.decode(rev[-2:])
-
-    return timestamp, clock_id
 
 
 def calc_timestamp(record: Record) -> int | None:
