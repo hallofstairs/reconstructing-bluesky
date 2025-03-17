@@ -25,7 +25,7 @@ class jsonl[T]:
 
 
 def records(
-    stream_path: str, end_date: str = "2023-07-01", batch_size: int = 1_000_000
+    stream_path: str, end_date: str | None = None, batch_size: int = 1_000_000
 ) -> t.Generator["Record", None, None]:
     """
     Generator that yields records from the stream for the given date range.
@@ -41,7 +41,7 @@ def records(
         with open(f"{stream_path}/{filename}", "r") as f:
             records: list[Record] = json.load(f)["records"]
             for record in records:
-                if record["ts"] > int(
+                if end_date and record["ts"] > int(
                     datetime.fromisoformat(end_date).timestamp() * 1_000
                 ):
                     break
