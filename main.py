@@ -1,7 +1,7 @@
 # %% Imports
 
-import datetime
 import typing as t
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -12,29 +12,19 @@ from utils import Like, Post, Record, records
 
 # Constants
 
-RAW_STREAM_DIR = "./data/stream-2023-07-01"
+IN_DIR = "./data/firehose-2023-05-01"
 
 REFRESH_SIZE = 20
 MAX_POSTS_PER_USER = 60
 MAX_POSTS_PER_SESSION = REFRESH_SIZE * 5
+END_DATE = datetime(2023, 3, 1, tzinfo=timezone.utc)
 
-SESSION_IDLE_THRESHOLD = 30 * 60  # 30 minutes
-END_DATE = "2023-02-01"
+SESSION_IDLE_THRESHOLD = 30  # minutes
 
-# TODO: You can also reconstruct deleted post users, timestamps from URI
+# TODO: Make this programmatic
+BOTS = ["did:plc:fjsmdevv3mmzc3dpd36u5yxc"]
 
-
-def to_ts(created_at: str) -> int:
-    return int(datetime.datetime.fromisoformat(created_at).timestamp())
-
-
-# === Prediction Tracking ===
-
-# What posts do we predict that each user has seen?
-predicted_seen: dict[str, list[tuple[str, str]]] = {}
-
-# What posts do we know that each user has seen based on their interactions?
-true_seen: dict[str, list[tuple[str, str]]] = {}
+# %%
 
 
 FeedType = t.Literal["following", "profile"]
@@ -65,6 +55,9 @@ class Users:
         self.info: dict[str, Users.Info] = {}
         self.sessions: dict[str, Users.Session] = {}
 
+    def is_bot(self, did: str) -> bool:
+        return did in BOTS
+
     def log_user(self, did: str) -> None:
         self.info[did] = {
             "following": [],
@@ -73,29 +66,6 @@ class Users:
             "last_interaction_ts": -1,
             "feed": [],
         }
-
-    def log_post(self, did: str, uri: str) -> None:
-        if uri in self.info[did]["posts"]:  # This shouldn't happen, but precaution
-            print(f"WARNING! Post {uri} already exists for user {did}")
-
-        self.info[did]["posts"].append(uri)
-        self.sessions[self.get_session_id(did)]["actions"].append(record)
-
-    def log_follow(self, did: str, subject_did: str) -> None:
-        if subject_did not in self.info:
-            # TODO: I'm pretty sure this would be a deleted user?
-            self.log_user(subject_did)
-
-        # TODO:
-        # Update session information
-        # User followed another user, meaning they saw their profile
-        # Start new profile view
-
-        if subject_did in self.info[did]["following"]:
-            return  # This happens semi-frequently, bug in data repos
-
-        self.info[did]["following"].append(subject_did)
-        self.sessions[self.get_session_id(did)]["actions"].append(record)
 
     def get_session_id(self, did: str) -> str:
         return f"{did}-{self.info[did]['curr_session_num']}"
@@ -107,8 +77,8 @@ class Users:
         if last_interaction_ts is None:
             return True
 
-        time_since_last_record = now_ts - last_interaction_ts
-        return time_since_last_record > idle_threshold
+        mins_since_last_record = (now_ts - last_interaction_ts) / 60_000
+        return mins_since_last_record > idle_threshold
 
     def get_following_feed(self, did: str) -> list:
         """Reconstruct a user's chronolical Following feed at any given time."""
@@ -146,7 +116,7 @@ class Users:
             "did": did,
             "start_ts": now_ts,
             "end_ts": now_ts,
-            "impressions": [],
+            "impressions": self.info[did]["feed"],
             "actions": [],
         }
 
@@ -159,19 +129,41 @@ class Users:
         return idx
 
     def log_like(self, did: str, subject_uri: str, record: Like) -> None:
-        session_id = self.get_session_id(did)
+        return
+        # session_id = self.get_session_id(did)
 
         # Log the record
-        self.sessions[session_id]["actions"].append(record)
+        # self.sessions[session_id]["actions"].append(record)
 
-        user_feed = self.info[did]["feed"]
+        # user_feed = self.info[did]["feed"]
 
         # Update seen in following
-        idx = self.get_idx(subject_uri, user_feed)
-        if idx:
-            self.sessions[session_id]["impressions"] = self.info[did]["feed"][: idx + 1]
+        # idx = self.get_idx(subject_uri, user_feed)
+        # if idx:
+        #     self.sessions[session_id]["impressions"] = self.info[did]["feed"][: idx + 1]
 
-        self.sessions[self.get_session_id(did)]["actions"].append(record)
+    def log_post(self, did: str, uri: str) -> None:
+        if uri in self.info[did]["posts"]:  # This shouldn't happen, but precaution
+            print(f"WARNING! Post {uri} already exists for user {did}")
+
+        self.info[did]["posts"].append(uri)
+
+    def log_follow(self, did: str, subject_did: str) -> None:
+        if subject_did not in self.info:
+            # TODO: I'm pretty sure this would be a deleted user?
+            self.log_user(subject_did)
+
+        # TODO:
+        # Update session information
+        # Start new profile view
+
+        if subject_did in self.info[did]["following"]:
+            return  # This happens semi-frequently, bug in data repos
+
+        self.info[did]["following"].append(subject_did)
+        self.sessions[self.get_session_id(did)]["impressions"].extend(
+            self.get_profile_feed(subject_did)
+        )
 
 
 class Posts:
@@ -196,37 +188,42 @@ class Posts:
 users = Users()
 posts = Posts()
 
+# %%
 
 # === Firehose Iteration ===
 
 # Iterate through each historical record in Bluesky's firehose
-for record in records(RAW_STREAM_DIR, end_date=END_DATE, log=True):
-    now_ts = to_ts(record["createdAt"])
+for record in records(IN_DIR, end_date=END_DATE):
+    ts = record["ts"]
     did = record["did"]
 
     if did not in users.info:
         users.log_user(did)
 
     # Session management
-    if users.is_new_session(did, now_ts):
-        users.log_session(did, now_ts)
+    if did not in BOTS and users.is_new_session(did, ts):
+        users.log_session(did, ts)
 
     if record["$type"] == "app.bsky.feed.post":
         # Skip replies and quotes, for now
-        if "reply" in record or "embed" in record:
-            continue
+        # if "reply" in record or "embed" in record:
+        #     continue
 
         users.log_post(did, record["uri"])
         posts.log_post(record["uri"])
 
     if record["$type"] == "app.bsky.feed.like":
-        users.log_like(did, record["subject"]["uri"], record)
+        if did not in BOTS:
+            users.log_like(did, record["subject"]["uri"], record)
 
     if record["$type"] == "app.bsky.graph.follow":
         users.log_follow(did, record["subject"])
 
-    users.info[did]["last_interaction_ts"] = now_ts
-    users.sessions[users.get_session_id(did)]["end_ts"] = now_ts
+    users.info[did]["last_interaction_ts"] = ts
+
+    if did not in BOTS:
+        users.sessions[users.get_session_id(did)]["end_ts"] = ts
+        users.sessions[users.get_session_id(did)]["actions"].append(record)
 
     # TODO: Blocks
 
@@ -248,81 +245,65 @@ for record in records(RAW_STREAM_DIR, end_date=END_DATE, log=True):
 # recall
 # precision
 
-# %%
-
-t_did = "did:plc:hd5g6z5wauicendc3zilioir"
-
-users.sessions[f"{t_did}-1"]
-
-# %% Validate
+# %% Validation
 
 MIN_INTERACTIONS = 1
 
-n_interactive = 0
+interactive_users = set()
 precisions = []
 recalls = []
-dids = []
-n_interactions = []
-n_true_seen = []
 
-# TODO: Can check if post is in posts ref to see if deleted
+for data in users.sessions.values():
+    # Number of total interactions
+    interactions = [
+        record["subject"]["uri"]
+        for record in data["actions"]
+        if record["$type"] == "app.bsky.feed.like"
+    ]
 
-for _id, data in users.sessions.items():
-    true_uris = set(
-        [
-            record["uri"]
-            for record in data["actions"]
-            if record["$type"] == "app.bsky.feed.like"
-        ]
-    )
-
-    if len(true_uris) < MIN_INTERACTIONS:
+    # Number of unique URIs interacted with
+    interacted_uris = set(interactions)
+    if len(interacted_uris) < MIN_INTERACTIONS:
         continue
 
-    impressions = set(data["impressions"])
+    impression_uris = set(data["impressions"])
+    interactive_users.add(data["did"])
+    captured_uris = interacted_uris.intersection(impression_uris)
 
-    n_interactive += 1
-    n_interactions.append(len(true_uris))
-    dids.append(did)
-
-    n_true_seen.append(len(true_uris))
-
-    correct_preds = true_uris.intersection(pred_uris)
-
-    precision = len(correct_preds) / len(pred_uris) if len(pred_uris) > 0 else 0
-    recall = len(correct_preds) / len(true_uris) if len(true_uris) > 0 else 0
-
+    recall = (
+        len(captured_uris) / len(interacted_uris) if len(interacted_uris) > 0 else 0
+    )
+    precision = (
+        len(captured_uris) / len(impression_uris) if len(impression_uris) > 0 else 0
+    )
     precisions.append(precision)
     recalls.append(recall)
 
-    print("\n=== AGGREGATED FEED STATS ===")
+print("\n=== AGGREGATED FEED STATS ===")
 
-    mean_precision = np.mean(precisions)
-    mean_recall = np.mean(recalls)
+mean_precision = np.mean(precisions)
+mean_recall = np.mean(recalls)
 
-    var_precision = np.var(precisions)
-    var_recall = np.var(recalls)
+var_precision = np.var(precisions)
+var_recall = np.var(recalls)
 
-    # Calculate median precision and recall
-    median_precision = np.median(precisions)
-    median_recall = np.median(recalls)
+# Calculate median precision and recall
+median_precision = np.median(precisions)
+median_recall = np.median(recalls)
 
-    print(
-        f"- # interactive users: {n_interactive}/{len(true_seen)} "
-        f"({n_interactive / len(true_seen):.4f}%)"
-    )
+print(
+    f"- # sessions: {len(users.sessions)} "
+    f"(mean: {len(users.sessions) / len(users.info):.1f} sessions/user)"
+)
+print(
+    f"- # interactive users: {len(interactive_users)}/{len(users.info)} "
+    f"({len(interactive_users) / len(users.info):.4f}%)"
+)
+print(
+    f"- Mean Precision: {mean_precision:.4f} (variance: {var_precision:.4f}), Median: {median_precision:.4f}"
+)
+print(
+    f"- Mean Recall: {mean_recall:.4f} (variance: {var_recall:.4f}), Median: {median_recall:.4f}"
+)
 
-    # Mean percentage of a user's reconstructed feed that was interacted with by them
-    print(
-        f"- Mean Precision: {mean_precision:.4f} (variance: {var_precision:.4f}), Median: {median_precision:.4f}"
-    )
-
-    # Mean percentage of a user's interactions that are included within their reconstructed feed
-    print(
-        f"- Mean Recall: {mean_recall:.4f} (variance: {var_recall:.4f}), Median: {median_recall:.4f}"
-    )
-
-    # Number of posts deleted from the network (estimated)
-    print(
-        f"- Deleted posts: {len(deleted_posts)}/{len(post_info)} ({len(deleted_posts) / len(post_info) * 100:.4f}%)"
-    )
+# %%
