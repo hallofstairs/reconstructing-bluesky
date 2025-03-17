@@ -1,14 +1,13 @@
 # %% Imports
 
+import json
+import os
 import typing as t
 from datetime import datetime, timezone
 
 import numpy as np
 
 from utils import Like, Post, Record, records
-
-# %%
-# TODO: Can write session information to disk after end of session to save memory
 
 # Constants
 
@@ -20,21 +19,25 @@ MAX_POSTS_PER_SESSION = REFRESH_SIZE * 5
 END_DATE = datetime(2023, 3, 1, tzinfo=timezone.utc)
 
 SESSION_IDLE_THRESHOLD = 30  # minutes
+SESSIONS_PATH = f"./data/sessions-{END_DATE.date()}.jsonl"
 
-# TODO: Make this programmatic
-BOTS = ["did:plc:fjsmdevv3mmzc3dpd36u5yxc"]
+if os.path.exists(SESSIONS_PATH):
+    os.remove(SESSIONS_PATH)
+
 
 # %%
 
 
 FeedType = t.Literal["following", "profile"]
 
+# TODO: Make this more programmatic
+BOTS = ["did:plc:fjsmdevv3mmzc3dpd36u5yxc"]
+
 
 class Users:
     class Info(t.TypedDict):
         posts: list[str]
         following: list[str]
-        curr_session_num: int
         last_interaction_ts: int | None
         feed: list[str]
 
@@ -46,6 +49,7 @@ class Users:
         """Basic information about a session."""
 
         did: str
+        session_num: int
         start_ts: int
         end_ts: int
         impressions: list[str]
@@ -62,13 +66,9 @@ class Users:
         self.info[did] = {
             "following": [],
             "posts": [],
-            "curr_session_num": 0,
             "last_interaction_ts": -1,
             "feed": [],
         }
-
-    def get_session_id(self, did: str) -> str:
-        return f"{did}-{self.info[did]['curr_session_num']}"
 
     def is_new_session(
         self, did: str, now_ts: int, idle_threshold: int = SESSION_IDLE_THRESHOLD
@@ -103,22 +103,35 @@ class Users:
     # TODO: Verify, especially number of posts
     def get_profile_feed(self, subject_did: str) -> list:
         """Reconstruct a single user's timeline of posts."""
-        return list(self.info[subject_did]["posts"])[-REFRESH_SIZE:][
-            :MAX_POSTS_PER_SESSION
-        ]
+        return list(self.info[subject_did]["posts"])[-REFRESH_SIZE:][:REFRESH_SIZE]
 
     def log_session(self, did: str, now_ts: int) -> None:
-        self.info[did]["curr_session_num"] += 1
-        session_id = self.get_session_id(did)
-        self.info[did]["feed"] = self.get_following_feed(did)
+        next_session_num = (
+            self.sessions[did]["session_num"] + 1 if did in self.sessions else 0
+        )
 
-        self.sessions[session_id] = {
+        # Write previous session to disk, if it exists
+        if did in self.sessions:
+            with open(SESSIONS_PATH, "a") as f:
+                json.dump(self.sessions[did], f)
+                f.write("\n")
+
+        self.info[did]["feed"] = self.get_following_feed(did)
+        self.sessions[did] = {
+            "session_num": next_session_num,
             "did": did,
             "start_ts": now_ts,
             "end_ts": now_ts,
             "impressions": self.info[did]["feed"],
             "actions": [],
         }
+
+    def dump_sessions(self) -> None:
+        sorted_sessions = sorted(self.sessions.values(), key=lambda x: x["end_ts"])
+        for session in sorted_sessions:
+            with open(SESSIONS_PATH, "a") as f:
+                json.dump(session, f)
+                f.write("\n")
 
     def get_idx(self, val: str, vals: list[str]) -> int | None:
         try:
@@ -161,9 +174,7 @@ class Users:
             return  # This happens semi-frequently, bug in data repos
 
         self.info[did]["following"].append(subject_did)
-        self.sessions[self.get_session_id(did)]["impressions"].extend(
-            self.get_profile_feed(subject_did)
-        )
+        self.sessions[did]["impressions"].extend(self.get_profile_feed(subject_did))
 
 
 class Posts:
@@ -187,8 +198,6 @@ class Posts:
 
 users = Users()
 posts = Posts()
-
-# %%
 
 # === Firehose Iteration ===
 
@@ -222,8 +231,8 @@ for record in records(IN_DIR, end_date=END_DATE):
     users.info[did]["last_interaction_ts"] = ts
 
     if did not in BOTS:
-        users.sessions[users.get_session_id(did)]["end_ts"] = ts
-        users.sessions[users.get_session_id(did)]["actions"].append(record)
+        users.sessions[did]["end_ts"] = ts
+        users.sessions[did]["actions"].append(record)
 
     # TODO: Blocks
 
@@ -240,12 +249,18 @@ for record in records(IN_DIR, end_date=END_DATE):
 
     # If they take an action based on that feed, we:
 
-# TODO: Evaluation at the end -- compare records to captured
-# ranking
-# recall
-# precision
+users.dump_sessions()
 
 # %% Validation
+
+
+# Read in sessions file
+with open(SESSIONS_PATH, "r") as f:
+    data = [json.loads(line.strip()) for line in f if line.strip()]
+    sessions = sorted(data, key=lambda x: x["end_ts"])
+
+
+# TODO: nRank scoring
 
 MIN_INTERACTIONS = 1
 
@@ -253,12 +268,12 @@ interactive_users = set()
 precisions = []
 recalls = []
 
-for data in users.sessions.values():
+for data in sessions:
     # Number of total interactions
     interactions = [
         record["subject"]["uri"]
         for record in data["actions"]
-        if record["$type"] == "app.bsky.feed.like"
+        if record["$type"] in ["app.bsky.feed.like", "app.bsky.feed.repost"]
     ]
 
     # Number of unique URIs interacted with
@@ -292,8 +307,8 @@ median_precision = np.median(precisions)
 median_recall = np.median(recalls)
 
 print(
-    f"- # sessions: {len(users.sessions)} "
-    f"(mean: {len(users.sessions) / len(users.info):.1f} sessions/user)"
+    f"- # sessions: {len(sessions)} "
+    f"(mean: {len(sessions) / len(users.info):.1f} sessions/user)"
 )
 print(
     f"- # interactive users: {len(interactive_users)}/{len(users.info)} "
