@@ -1,5 +1,5 @@
 import mmap
-import os
+from pathlib import Path
 import typing as t
 from datetime import datetime
 
@@ -25,26 +25,23 @@ class jsonl[T]:
 
 
 def records(
-    stream_path: str, end_date: str | None = None, batch_size: int = 1_000_000
+    stream_path: str, end_date: datetime | None = None, batch_size: int = 1_000_000
 ) -> t.Generator["Record", None, None]:
     """
     Generator that yields records from the stream for the given date range.
 
-    End date is inclusive.
+    End date is not incluive.
     """
 
-    files = sorted(
-        [f for f in os.listdir(stream_path) if f.endswith(".json")],
-        key=lambda x: int(x.split(".")[0]),
-    )
-    for filename in tqdm(files, total=len(files)):
-        with open(f"{stream_path}/{filename}", "r") as f:
+    path = Path(stream_path)
+    files = sorted(path.glob("*.json"), key=lambda x: int(x.stem))
+
+    for fname in tqdm(files, total=len(files)):
+        with open(fname, "r") as f:
             records: list[Record] = json.load(f)["records"]
             for record in records:
-                if end_date and record["ts"] > int(
-                    datetime.fromisoformat(end_date).timestamp() * 1_000
-                ):
-                    break
+                if end_date and record["ts"] > end_date.timestamp() * 1000:
+                    return
                 yield record
 
 
