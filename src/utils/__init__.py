@@ -1,11 +1,11 @@
 import mmap
-import sys
-import time
+import os
 import typing as t
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 
 import ujson as json
+from tqdm import tqdm
 
 T = t.TypeVar("T")
 
@@ -26,10 +26,7 @@ class jsonl[T]:
 
 
 def records(
-    stream_path: str,
-    start_date: str = "2022-11-17",
-    end_date: str = "2023-07-01",
-    log: bool = True,
+    stream_path: str, end_date: str = "2023-07-01", batch_size: int = 1_000_000
 ) -> t.Generator["Record", None, None]:
     """
     Generator that yields records from the stream for the given date range.
@@ -37,44 +34,19 @@ def records(
     End date is inclusive.
     """
 
-    def generate_timestamps(start_date: str, end_date: str) -> list[str]:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        delta = end_dt - start_dt
-
-        return [
-            (start_dt + timedelta(days=i)).strftime("%Y-%m-%d")
-            for i in range(delta.days + 1)
-        ]
-
-    for ts in tq(generate_timestamps(start_date, end_date), active=log):
-        for record in jsonl[Record].iter(f"{stream_path}/{ts}.jsonl"):
-            yield record
-
-
-def tq(iterable: t.Iterable[T], active: bool = True) -> t.Generator[T, None, None]:
-    total = len(iterable) if isinstance(iterable, t.Sized) else None
-
-    start_time = time.time()
-    estimated_time_remaining = 0
-
-    for i, item in enumerate(iterable):
-        if active:
-            if total:
-                elapsed_time = time.time() - start_time
-                items_per_second = (i + 1) / elapsed_time if elapsed_time > 0 else 0
-                estimated_time_remaining = (
-                    (total - i - 1) / items_per_second if items_per_second > 0 else 0
-                )
-                sys.stdout.write(
-                    f"\r{i + 1}/{total} ({((i + 1) / total) * 100:.2f}%) - {estimated_time_remaining / 60:.1f}m until done"
-                )
-                sys.stdout.flush()
-            else:
-                sys.stdout.write(f"\rProcessed: {i + 1}")
-                sys.stdout.flush()
-
-        yield item
+    files = sorted(
+        [f for f in os.listdir(stream_path) if f.endswith(".json")],
+        key=lambda x: int(x.split(".")[0]),
+    )
+    for filename in tqdm(files, total=len(files) * batch_size):
+        with open(f"{stream_path}/{filename}", "r") as f:
+            records: list[Record] = json.load(f)["records"]
+            for record in records:
+                if record["ts"] > int(
+                    datetime.fromisoformat(end_date).timestamp() * 1_000
+                ):
+                    break
+                yield record
 
 
 # === Data types ===
@@ -85,10 +57,11 @@ class CidUri(t.TypedDict):
     uri: str
 
 
-Post = t.TypedDict(
-    "Post",
+ExistingPost = t.TypedDict(
+    "ExistingPost",
     {
         "$type": t.Literal["app.bsky.feed.post"],
+        "ts": int,
         "did": str,
         "uri": str,
         "text": str,
@@ -98,10 +71,22 @@ Post = t.TypedDict(
     },
 )
 
+DeletedPost = t.TypedDict(
+    "DeletedPost",
+    {
+        "$type": t.Literal["app.bsky.feed.post"],
+        "ts": int,
+        "did": str,
+        "uri": str,
+        "deleted": t.Literal[True],
+    },
+)
+
 Follow = t.TypedDict(
     "Follow",
     {
         "$type": t.Literal["app.bsky.graph.follow"],
+        "ts": int,
         "did": str,  # DID of the follower
         "uri": str,  # URI of the follow record
         "createdAt": str,  # Timestamp of the follow
@@ -113,6 +98,7 @@ Repost = t.TypedDict(
     "Repost",
     {
         "$type": t.Literal["app.bsky.feed.repost"],
+        "ts": int,
         "did": str,
         "uri": str,
         "createdAt": str,
@@ -124,6 +110,7 @@ Like = t.TypedDict(
     "Like",
     {
         "$type": t.Literal["app.bsky.feed.like"],
+        "ts": int,
         "did": str,
         "uri": str,
         "createdAt": str,
@@ -135,6 +122,7 @@ Block = t.TypedDict(
     "Block",
     {
         "$type": t.Literal["app.bsky.graph.block"],
+        "ts": int,
         "did": str,
         "uri": str,
         "createdAt": str,
@@ -146,11 +134,13 @@ Profile = t.TypedDict(
     "Profile",
     {
         "$type": t.Literal["app.bsky.actor.profile"],
+        "ts": int,
         "did": str,
         "createdAt": str,
     },
 )
 
+Post = ExistingPost | DeletedPost
 Record = Post | Follow | Repost | Like | Block | Profile
 
 
@@ -208,11 +198,11 @@ class s32:
         return i
 
 
-def parse_rkey(rev: str) -> tuple[datetime, int]:
-    """Extract the data from the rkey of a URI"""
+def parse_rkey(rev: str) -> tuple[int, int]:
+    """Extract the data from the rkey of a URI. Returns (timestamp, clock_id) tuple.
+    timestamp is Unix timestamp in microseconds."""
 
     timestamp = s32.decode(rev[:-2])  # unix, microseconds
     clock_id = s32.decode(rev[-2:])
 
-    timestamp = datetime.fromtimestamp(timestamp / 1_000_000)
     return timestamp, clock_id
