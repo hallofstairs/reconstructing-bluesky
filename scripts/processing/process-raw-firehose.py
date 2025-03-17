@@ -285,10 +285,16 @@ print(f"\nDeletion rate: {deletion_rate:.2f}% of all posts")
 
 # ==== DELETE RE-INSERTION ====
 
-#  Re-insert deleted posts and users back into firehose
+# Filter out invalid rkeys from deleted posts
+valid_deletes: list[str] = []
+for uri in deleted_posts:
+    rkey = rkey_from_uri(uri)
+    if rkey:
+        parse_rkey(rkey)
+        valid_deletes.append(uri)
 
 # Sort deletes
-sorted_deletes = sorted(deleted_posts, key=lambda x: x.split("/")[-1])
+sorted_deletes = sorted(valid_deletes, key=lambda x: x.split("/")[-1])
 
 delete_ts = -1
 delete_idx = 0
@@ -297,7 +303,7 @@ last_ts = -1
 stream_dir = Path(TEMP_DIR)
 files = sorted(stream_dir.glob("*.json"), key=lambda x: int(x.stem))
 
-# Insert deletes at appropriate time in firehose
+# Insert deleted posts into firehose
 for file in files:
     new_batch = []
 
