@@ -140,8 +140,8 @@ while record_buffer:
 
 users = set[str]()
 posts = set[str]()
-deleted_users: list[str] = []
-deleted_posts: list[str] = []
+deleted_users = set[str]()
+deleted_posts = set[str]()
 
 # Iterate through each historical record in Bluesky's firehose
 for record in records(TEMP_DIR, end_date=END_DATE):
@@ -168,19 +168,19 @@ for record in records(TEMP_DIR, end_date=END_DATE):
 
                 if root_uri:  # Hacky, for one-off case
                     if root_uri not in posts:
-                        deleted_posts.append(root_uri)
+                        deleted_posts.add(root_uri)
 
                     root_did = did_from_uri(root_uri)
                     if root_did not in users:
-                        deleted_users.append(root_did)
+                        deleted_users.add(root_did)
 
                 if parent_uri:  # Hacky, for one-off case
                     if parent_uri not in posts:
-                        deleted_posts.append(parent_uri)
+                        deleted_posts.add(parent_uri)
 
                     parent_did = did_from_uri(parent_uri)
                     if parent_did not in users:
-                        deleted_users.append(parent_did)
+                        deleted_users.add(parent_did)
 
             # If a user quoted a post, we know they saw the subject post
             quoted_uri = get_quoted_uri(record)
@@ -189,16 +189,16 @@ for record in records(TEMP_DIR, end_date=END_DATE):
                 #     print("FOUND IN QUOTE: ", record)
 
                 if quoted_uri not in posts:
-                    deleted_posts.append(quoted_uri)
+                    deleted_posts.add(quoted_uri)
 
                 quoted_did = did_from_uri(quoted_uri)
                 if quoted_did not in users:
-                    deleted_users.append(quoted_did)
+                    deleted_users.add(quoted_did)
 
         case "app.bsky.graph.follow":
             if record["subject"] not in users:
                 # Probably a deleted user? Maybe a bug?
-                deleted_users.append(record["subject"])
+                deleted_users.add(record["subject"])
 
         case "app.bsky.feed.like":
             subject_uri = record["subject"]["uri"]
@@ -207,11 +207,11 @@ for record in records(TEMP_DIR, end_date=END_DATE):
             #     print("FOUND IN LIKE: ", record)
 
             if subject_uri not in posts:
-                deleted_posts.append(subject_uri)
+                deleted_posts.add(subject_uri)
 
             subect_did = did_from_uri(subject_uri)
             if subect_did not in users:
-                deleted_users.append(subect_did)
+                deleted_users.add(subect_did)
 
         case "app.bsky.feed.repost":
             subject_uri = record["subject"]["uri"]
@@ -220,11 +220,11 @@ for record in records(TEMP_DIR, end_date=END_DATE):
             #     print("FOUND IN REPOST: ", record)
 
             if subject_uri not in posts:
-                deleted_posts.append(subject_uri)
+                deleted_posts.add(subject_uri)
 
             subect_did = did_from_uri(subject_uri)
             if subect_did not in users:
-                deleted_users.append(subect_did)
+                deleted_users.add(subect_did)
 
         case _:
             continue
@@ -232,7 +232,7 @@ for record in records(TEMP_DIR, end_date=END_DATE):
 # ==== VALIDATION ====
 
 # Check for any users that are marked as both existing and deleted
-user_overlap = set(deleted_users).intersection(set(users))
+user_overlap = deleted_users.intersection(set(users))
 if user_overlap:
     print(
         f"\nWarning: Found {len(user_overlap)} users that are both deleted and existing:"
@@ -240,7 +240,7 @@ if user_overlap:
     print(user_overlap)
 
 # Check for any posts that are marked as both existing and deleted
-post_overlap = set(deleted_posts).intersection(set(posts))
+post_overlap = deleted_posts.intersection(set(posts))
 if post_overlap:
     print(
         f"\nWarning: Found {len(post_overlap)} posts that are both deleted and existing:"
