@@ -38,7 +38,7 @@ from utils import (
 
 # ==== Constants ====
 
-END_DATE = datetime.datetime(2023, 4, 1, tzinfo=datetime.timezone.utc)
+END_DATE = datetime.datetime(2023, 5, 1, tzinfo=datetime.timezone.utc)
 BATCH_SIZE = 1_000_000  # Number of records per file
 
 IN_DIR = "./data/stream-2023-07-01"
